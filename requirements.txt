@@ -1,0 +1,17 @@
+opencv-python>=4.5.0
+
+# Sayısal Hesaplamalar ve Matris İşlemleri  
+numpy>=1.21.0
+
+# Built-in Python modülleri (kurulum gerektirmez):
+# - math: Matematiksel işlemler
+# - os: Dosya sistemi işlemleri
+# - collections: deque için kullanılıyor
+
+# Önerilen Python versiyonu: 3.7+
+
+# Kurulum komutu:
+# pip install -r requirements.txt
+
+# Alternatif kurulum (tek tek):
+# pip install opencv-python numpy

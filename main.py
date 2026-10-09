@@ -5,8 +5,9 @@ import os
 from collections import deque
 
 # video islemek icin gerekli
-VIDEO_DOSYA_YOL = 'tennis.mp4'
-KORT_RESIM_YOL = "kort.png"
+ASSET_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+VIDEO_DOSYA_YOL = os.path.join(ASSET_DIRECTORY, 'tennis.mp4')
+KORT_RESIM_YOL = os.path.join(ASSET_DIRECTORY, 'court.png')
 IS_DEBUG = False
 
 # geometrik olarak dogru araliklarda mı bakalım
@@ -99,6 +100,7 @@ class TenisAnalizi:
         self.yas = 0
         self.ardisik_gorunmez_sayac = 0
         self.kort_tarafi = None
+        self.map_position = None
 
     # bir sonraki pozisyonu tahminlemeye çalışır bunu yaparken de bir öncekini de kullanıyoruz
     def tahmin_et(self):
@@ -141,6 +143,7 @@ def roi_bolgesinde_kort_tespit_et(roi_karesi):
     
     if cizgiler is None:
         return None
+    cizgiler = cizgiler.reshape(-1, 1, 4)
     
     yatay_cizgiler, dikey_cizgiler = [], []
     
@@ -517,52 +520,30 @@ def kort_krokisini_ciz(temel_kroki_resmi, homografi_matrisi, oyuncu_takipcileri,
     # burada oyuncuları sinirda tutmaya calistim
     if oyuncu_noktalari:
         donusturulmus_oyuncu_noktalari = kroki_icin_noktalari_donustur(oyuncu_noktalari, homografi_matrisi)
-        if not hasattr(kort_krokisini_ciz, 'eski_pozisyonlar'):
-            kort_krokisini_ciz.eski_pozisyonlar = {}
-        
         for i, donusturulmus_nokta in enumerate(donusturulmus_oyuncu_noktalari):
-            oyuncu_key = f"oyuncu_{i}"
-            
-            if oyuncu_key in kort_krokisini_ciz.eski_pozisyonlar:
-                eski_pos = kort_krokisini_ciz.eski_pozisyonlar[oyuncu_key]
-                
-                aktif_takipciler = [t for t in oyuncu_takipcileri.values() if t is not None]
-                oyuncu_taraf = None
-                if i < len(aktif_takipciler):
-                    oyuncu_taraf = aktif_takipciler[i].kort_tarafi
-
-                if oyuncu_taraf == 'alt':
-                    donusturulmus_nokta = (
-                        np.clip(donusturulmus_nokta[0], 10, HEDEF_KROKI_GENISLIK - 10),
-                        np.clip(donusturulmus_nokta[1], 10, HEDEF_KROKI_YUKSEKLIK - 30)
-                    )
-                else:
-                    donusturulmus_nokta = (
-                        np.clip(donusturulmus_nokta[0], 10, HEDEF_KROKI_GENISLIK - 10),
-                        np.clip(donusturulmus_nokta[1], 10, HEDEF_KROKI_YUKSEKLIK - 10)
-                    )
-                
-                if oyuncu_key in kort_krokisini_ciz.eski_pozisyonlar:
-                    eski_pos = kort_krokisini_ciz.eski_pozisyonlar[oyuncu_key]
-               
+            takipci = aktif_takipciler[i]
+            max_y = HEDEF_KROKI_YUKSEKLIK - (30 if takipci.kort_tarafi == 'alt' else 10)
+            donusturulmus_nokta = (
+                np.clip(donusturulmus_nokta[0], 10, HEDEF_KROKI_GENISLIK - 10),
+                np.clip(donusturulmus_nokta[1], 10, max_y)
+            )
+            eski_pos = takipci.map_position
+            if eski_pos is not None:
                 mesafe = np.sqrt((eski_pos[0] - donusturulmus_nokta[0])**2 + (eski_pos[1] - donusturulmus_nokta[1])**2)
-
-                if mesafe > 15: 
-                    smooth_x = int(eski_pos[0] * 0.3 + donusturulmus_nokta[0] * 0.7)
-                    smooth_y = int(eski_pos[1] * 0.3 + donusturulmus_nokta[1] * 0.7)
+                if mesafe > 15:
+                    weight = 0.7
                 elif mesafe > 5:
-                    smooth_x = int(eski_pos[0] * 0.5 + donusturulmus_nokta[0] * 0.5)
-                    smooth_y = int(eski_pos[1] * 0.5 + donusturulmus_nokta[1] * 0.5)
+                    weight = 0.5
                 else:
-                    smooth_x = int(eski_pos[0] * 0.7 + donusturulmus_nokta[0] * 0.3)
-                    smooth_y = int(eski_pos[1] * 0.7 + donusturulmus_nokta[1] * 0.3)
-                
-                nokta_int = (smooth_x, smooth_y)
+                    weight = 0.3
+                nokta_int = (
+                    int(eski_pos[0] * (1 - weight) + donusturulmus_nokta[0] * weight),
+                    int(eski_pos[1] * (1 - weight) + donusturulmus_nokta[1] * weight)
+                )
             else:
                 nokta_int = tuple(map(int, donusturulmus_nokta))
-            
-            kort_krokisini_ciz.eski_pozisyonlar[oyuncu_key] = nokta_int
-            
+            takipci.map_position = nokta_int
+
             cv2.circle(kroki_gorunumu, nokta_int, oyuncu_yaricaplari[i], oyuncu_renkleri[i], -1)
     
     if durum_metni:
@@ -605,32 +586,43 @@ def temel_ekranlari_goster(ana_kare, hareket_maskesi, kroki_gorunumu, hata_ayikl
 
 def main(hata_ayiklama=False):
     if not os.path.exists(VIDEO_DOSYA_YOL):
-        print(f"UYARI: Video dosyasi okunamadi. (Lokasyon yanlis olabilir.)")
+        print(f"Warning: video file not found: '{VIDEO_DOSYA_YOL}'.")
         return
-    
+
     kamera = cv2.VideoCapture(VIDEO_DOSYA_YOL)
-    ret, test_karesi = kamera.read()
-    if not ret:
-        print("UYARI: Video dosyasi okunamadi. (Lokasyon yanlis olabilir.)")
-        return
-    
+    try:
+        ret, test_karesi = kamera.read()
+        if not ret or test_karesi is None:
+            print(f"Warning: video file could not be decoded: '{VIDEO_DOSYA_YOL}'.")
+            return
+        _process_video(kamera, test_karesi, hata_ayiklama)
+    finally:
+        kamera.release()
+        cv2.destroyAllWindows()
+    print("Processing complete.")
+
+
+def _process_video(kamera, test_karesi, hata_ayiklama):
     video_fps = kamera.get(cv2.CAP_PROP_FPS)
-    if video_fps <= 0: video_fps = 30
-    frame_delay = int(1000 / video_fps)
+    if not math.isfinite(video_fps) or video_fps <= 0:
+        video_fps = 30
+    frame_delay = max(1, int(1000 / video_fps))
     hiz_carpani = 1.0
     
     olcek = HEDEF_GENISLIK / test_karesi.shape[1]
     hedef_yukseklik = int(test_karesi.shape[0] * olcek)
-    kamera.set(cv2.CAP_PROP_POS_FRAMES, 0)
     
     arka_plan_cikarici = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=16, detectShadows=False)
     
     temel_kroki_yeniden_boyutlandirilmis = None
     if os.path.exists(KORT_RESIM_YOL):
         kroki_resmi = cv2.imread(KORT_RESIM_YOL)
-        temel_kroki_yeniden_boyutlandirilmis = cv2.resize(kroki_resmi, (HEDEF_KROKI_GENISLIK, HEDEF_KROKI_YUKSEKLIK))
+        if kroki_resmi is not None:
+            temel_kroki_yeniden_boyutlandirilmis = cv2.resize(kroki_resmi, (HEDEF_KROKI_GENISLIK, HEDEF_KROKI_YUKSEKLIK))
+        else:
+            print(f"Warning: court image could not be decoded: '{KORT_RESIM_YOL}'.")
     else:
-        print(f"UYARI: Kroki resmi su yolda: '{KORT_RESIM_YOL}' , bulunamadi.")
+        print(f"Warning: court image not found: '{KORT_RESIM_YOL}'.")
     
     son_bilinen_koseler = None
     kort_gorunumu_aktif_mi = True
@@ -653,12 +645,17 @@ def main(hata_ayiklama=False):
     
     print("Islem basliyor... Cikmak icin 'q' tusuna basin.")
     
+    first_frame = test_karesi
     while kamera.isOpened():
-        ret, kare = kamera.read()
-        if not ret:
-            break
+        if first_frame is not None:
+            kare = first_frame
+            first_frame = None
+        else:
+            ret, kare = kamera.read()
+            if not ret:
+                break
         
-        mevcut_delay = int(frame_delay / hiz_carpani)
+        mevcut_delay = max(1, int(frame_delay / hiz_carpani))
         
         kare = cv2.resize(kare, (HEDEF_GENISLIK, hedef_yukseklik))
         kare_sayaci += 1
@@ -886,9 +883,6 @@ def main(hata_ayiklama=False):
         elif tus == ord('-'): hiz_carpani = max(0.25, hiz_carpani - 0.5)
         elif tus == ord('r'): hiz_carpani = 1.0
     
-    kamera.release()
-    cv2.destroyAllWindows()
-    print("Islemler tamamlandi.")
 
 if __name__ == "__main__":
     main(IS_DEBUG)
